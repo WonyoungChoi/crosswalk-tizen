@@ -49,6 +49,10 @@ class WebApplication : public WebView::EventListener {
   void Suspend();
   void Terminate();
 
+  bool SetUserAgent(const std::string& user_agent);
+
+  Ewk_Context* ewk_context() const { return ewk_context_; }
+
   std::string data_path() const { return app_data_path_; }
   void set_terminator(std::function<void(void)> terminator) {
     terminator_ = terminator;

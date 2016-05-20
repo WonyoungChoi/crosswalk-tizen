@@ -118,6 +118,14 @@ const char* kDBPrivateSection = "private";
 const char* kDefaultCSPRule =
     "default-src *; script-src 'self'; style-src 'self'; object-src 'none';";
 
+
+struct AsyncCallbackData {
+  std::string id;
+  std::string type;
+  std::string value;
+  void* data;
+};
+
 bool FindPrivilege(common::ApplicationData* app_data,
                    const std::string& privilege) {
   if (app_data->permissions_info().get() == NULL) return false;
@@ -161,10 +169,34 @@ static void InitializeNotificationCallback(Ewk_Context* ewk_context,
   ewk_context_notification_callbacks_set(ewk_context, show, hide, app);
 }
 
-static Eina_Bool ExitAppIdlerCallback(void* data) {
-  WebApplication* app = static_cast<WebApplication*>(data);
+static Eina_Bool ExitAppIdlerCallback(void* user_data) {
+  WebApplication* app = static_cast<WebApplication*>(user_data);
   if (app)
     app->Terminate();
+  return ECORE_CALLBACK_CANCEL;
+}
+
+static Eina_Bool ChangeUserAgentIdlerCallback(void* user_data) {
+  AsyncCallbackData* data = static_cast<AsyncCallbackData*>(user_data);
+
+  WebApplication* app = static_cast<WebApplication*>(data->data);
+
+  bool ret = app->SetUserAgent(data->value);
+
+  // Send response
+  Ewk_IPC_Wrt_Message_Data* ans = ewk_ipc_wrt_message_data_new();
+  ewk_ipc_wrt_message_data_type_set(ans, data->type.c_str());
+  ewk_ipc_wrt_message_data_reference_id_set(ans, data->id.c_str());
+  if (ret)
+    ewk_ipc_wrt_message_data_value_set(ans, "success");
+  else
+    ewk_ipc_wrt_message_data_value_set(ans, "failed");
+  if (!ewk_ipc_wrt_message_send(app->ewk_context(), ans)) {
+    LOGGER(ERROR) << "Failed to send response";
+  }
+  ewk_ipc_wrt_message_data_del(ans);
+
+  delete data;
   return ECORE_CALLBACK_CANCEL;
 }
 
@@ -485,6 +517,14 @@ void WebApplication::Terminate() {
   }
 }
 
+bool WebApplication::SetUserAgent(const std::string& user_agent) {
+  bool ret = false;
+  if (view_stack_.size() > 0 && view_stack_.front() != NULL) {
+    ret = view_stack_.front()->SetUserAgent(user_agent);
+  }
+  return ret;
+}
+
 void WebApplication::OnCreatedNewWebView(WebView* /*view*/, WebView* new_view) {
   if (view_stack_.size() > 0 && view_stack_.front() != NULL)
     view_stack_.front()->SetVisibility(false);
@@ -547,24 +587,12 @@ void WebApplication::OnReceivedWrtMessage(WebView* /*view*/,
     // One Way Message
     ecore_idler_add(ExitAppIdlerCallback, this);
   } else if (TYPE_IS("tizen://changeUA")) {
-    // Async Message
-    // Change UserAgent of current WebView
-    bool ret = false;
-    if (view_stack_.size() > 0 && view_stack_.front() != NULL) {
-      ret = view_stack_.front()->SetUserAgent(std::string(msg_value));
-    }
-    // Send response
-    Ewk_IPC_Wrt_Message_Data* ans = ewk_ipc_wrt_message_data_new();
-    ewk_ipc_wrt_message_data_type_set(ans, msg_type);
-    ewk_ipc_wrt_message_data_reference_id_set(ans, msg_id);
-    if (ret)
-      ewk_ipc_wrt_message_data_value_set(ans, "success");
-    else
-      ewk_ipc_wrt_message_data_value_set(ans, "failed");
-    if (!ewk_ipc_wrt_message_send(ewk_context_, ans)) {
-      LOGGER(ERROR) << "Failed to send response";
-    }
-    ewk_ipc_wrt_message_data_del(ans);
+    AsyncCallbackData* data = new AsyncCallbackData();
+    data->id = std::string(msg_id);
+    data->type = std::string(msg_type);
+    data->value = std::string(msg_value);
+    data->data = this;
+    ecore_timer_add(3, ChangeUserAgentIdlerCallback, data);
   } else if (TYPE_IS("tizen://deleteAllCookies")) {
     Ewk_IPC_Wrt_Message_Data* ans = ewk_ipc_wrt_message_data_new();
     ewk_ipc_wrt_message_data_type_set(ans, msg_type);
